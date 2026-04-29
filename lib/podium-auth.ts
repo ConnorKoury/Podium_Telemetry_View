@@ -8,11 +8,13 @@ const KV_TTL = 72_000; // 20 hours — Podium sessions last ~24h
 // In-memory fallback for local dev (not shared across edge invocations)
 let localCache: string | null = null;
 
-async function getKv(): Promise<KVNamespace | null> {
+type Kv = { get(k: string): Promise<string | null>; put(k: string, v: string, o?: { expirationTtl?: number }): Promise<void>; delete(k: string): Promise<void> };
+
+async function getKv(): Promise<Kv | null> {
   try {
     const { getRequestContext } = await import("@cloudflare/next-on-pages");
-    const env = getRequestContext().env as CloudflareEnv;
-    return env.PODIUM_SESSION ?? null;
+    const env = getRequestContext().env as Record<string, unknown>;
+    return (env.PODIUM_SESSION as Kv) ?? null;
   } catch {
     return null;
   }
