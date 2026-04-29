@@ -1,0 +1,11 @@
+name = "raing"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = ".vercel/output/static"
+
+# KV namespace for Podium session cookie cache
+# Replace <KV_NAMESPACE_ID> with the ID from:
+#   Cloudflare dashboard → Workers & Pages → KV → PODIUM_SESSION namespace
+[[kv_namespaces]]
+binding = "PODIUM_SESSION"
+id = "9b1fdfdb843e4659b19ec204d4fbcdaf"
