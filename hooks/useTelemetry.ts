@@ -86,8 +86,21 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
     registeredRef.current = null;
 
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsPort = process.env.NEXT_PUBLIC_WS_PORT ?? "3001";
-    const ws = new WebSocket(`${protocol}://${window.location.hostname}:${wsPort}/ws`);
+    const wsServerUrl = process.env.NEXT_PUBLIC_WS_SERVER_URL;
+    const wsUrl = wsServerUrl
+      ? `${wsServerUrl.replace(/^http/, "ws")}/ws`
+      : `${protocol}://${window.location.hostname}:${process.env.NEXT_PUBLIC_WS_PORT ?? "3001"}/ws`;
+
+    if (!wsServerUrl && window.location.hostname !== "localhost") {
+      setState((s) => ({
+        ...s,
+        connectionState: "error",
+        lastError: "Live telemetry requires a WebSocket server. Set NEXT_PUBLIC_WS_SERVER_URL to enable it.",
+      }));
+      return;
+    }
+
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {

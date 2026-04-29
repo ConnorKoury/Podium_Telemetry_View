@@ -2,12 +2,10 @@ export const runtime = "edge";
 
 import { NextResponse } from "next/server";
 
-// In local dev, delegates to the Bun ws-server.ts process.
-// On Cloudflare Pages, WS_SERVER_URL should point to a deployed ws-server instance.
-// If unset in production, live session listing is unavailable (history/lap loading still works).
-const WS_SERVER =
-  process.env.WS_SERVER_URL ??
-  `http://localhost:${process.env.WS_PORT ?? "3001"}`;
+const WS_SERVER = process.env.WS_SERVER_URL ??
+  (process.env.NODE_ENV === "development"
+    ? `http://localhost:${process.env.WS_PORT ?? "3001"}`
+    : null);
 
 export async function GET() {
   if (!WS_SERVER) {
