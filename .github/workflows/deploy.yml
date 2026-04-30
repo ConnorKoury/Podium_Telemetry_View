@@ -44,4 +44,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy .vercel/output/static --project-name=podium-telemetry-view ${{ github.ref == 'refs/heads/main' && '' || '--branch=preview' }}
+          command: pages deploy .vercel/output/static --project-name=podium-telemetry-view --branch=${{ github.ref == 'refs/heads/main' && 'main' || 'preview' }}
