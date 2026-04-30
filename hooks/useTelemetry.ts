@@ -92,26 +92,35 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
     setState((s) => ({ ...s, connectionState: "proxy_connecting", lastError: null }));
     registeredRef.current = null;
 
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsServerUrl = process.env.NEXT_PUBLIC_WS_SERVER_URL;
-    const wsUrl = wsServerUrl
-      ? `${wsServerUrl.replace(/^http/, "ws")}/ws`
-      : `${protocol}://${window.location.hostname}:${process.env.NEXT_PUBLIC_WS_PORT ?? "3001"}/ws`;
+    // Try direct connection to Podium first; fall back to proxy if configured
+    const PODIUM_URLS = [
+      "wss://telemetry.podium.live/eventbus/websocket",
+      "wss://telemetry.podium.live/eventbus",
+      "wss://telemetry.podium.live",
+    ];
 
-    if (!wsServerUrl && window.location.hostname !== "localhost") {
-      setState((s) => ({
-        ...s,
-        connectionState: "error",
-        lastError: "Live telemetry requires a WebSocket server. Set NEXT_PUBLIC_WS_SERVER_URL to enable it.",
-      }));
-      return;
-    }
+    const proxyUrl = process.env.NEXT_PUBLIC_WS_SERVER_URL;
+    const wsUrl = proxyUrl
+      ? `${proxyUrl.replace(/^http/, "ws")}/ws`
+      : PODIUM_URLS[0]!;
+    const isDirect = !proxyUrl;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Proxy connected message will come from server
+      if (isDirect) {
+        // Synthetic proxy_connected so the rest of the message handler works unchanged
+        setState((s) => ({ ...s, connectionState: "proxy_connected", proxyUrl: wsUrl }));
+        send({ type: "ping" });
+        listSessions();
+        const deviceToRegister = eventInfo?.eventDeviceId ?? pendingDeviceRef.current;
+        if (deviceToRegister) {
+          pendingDeviceRef.current = null;
+          setTimeout(() => registerForDevice(deviceToRegister), 500);
+        }
+      }
+      // Proxy mode: wait for proxy_connected message from the server
     };
 
     ws.onmessage = (event) => {
