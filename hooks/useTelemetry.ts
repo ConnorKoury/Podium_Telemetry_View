@@ -60,7 +60,7 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
         `alertmessage.${eventDeviceId}`,
       ];
       for (const address of addresses) {
-        send({ type: "register", address });
+        send({ type: "register", address, headers: {} });
       }
       setState((s) => ({ ...s, connectionState: "registered" }));
     },
@@ -72,6 +72,7 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
     send({
       type: "send",
       address: "listTelemetryStreamSessions",
+      headers: {},
       body: {},
       replyAddress,
     });

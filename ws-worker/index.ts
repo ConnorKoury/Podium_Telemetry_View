@@ -30,7 +30,10 @@ function handleWsProxy(): Response {
     });
 
     ws.addEventListener("message", (e: MessageEvent) => {
-      try { server.send(e.data as string); } catch { /* closed */ }
+      try {
+        const data = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data as ArrayBuffer);
+        server.send(data);
+      } catch { /* closed */ }
     });
 
     ws.addEventListener("close", (e: CloseEvent) => {
@@ -45,7 +48,10 @@ function handleWsProxy(): Response {
 
   server.addEventListener("message", (e: MessageEvent) => {
     if (podium?.readyState === WebSocket.OPEN) {
-      try { podium.send(e.data as string); } catch { /* closed */ }
+      try {
+        const data = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data as ArrayBuffer);
+        podium.send(data);
+      } catch { /* closed */ }
     }
   });
 
