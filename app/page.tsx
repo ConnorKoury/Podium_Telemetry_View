@@ -66,6 +66,7 @@ export default function Dashboard() {
   const [loadedLap, setLoadedLap] = useState<LapData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("discover");
   const [manualDeviceId, setManualDeviceId] = useState("");
+  const [liveDeviceId, setLiveDeviceId] = useState<string | null>(null);
   const sidebar = useSidebarResize();
 
   const {
@@ -84,7 +85,12 @@ export default function Dashboard() {
     listSessions,
   } = useTelemetry(eventInfo);
 
-  const deviceKey = eventInfo?.eventDeviceId ?? eventInfo?.deviceId ?? null;
+  const deviceKey = useMemo(() => {
+    if (eventInfo) {
+      return `event:${eventInfo.eventId}:device:${eventInfo.deviceId}`;
+    }
+    return liveDeviceId ? `live:${liveDeviceId}` : null;
+  }, [eventInfo, liveDeviceId]);
   const { widgets, addWidget, removeWidget, updateWidget, moveWidget } = useChartConfig(deviceKey);
 
   // When viewing a loaded lap, use its data; otherwise use the live stream
@@ -117,9 +123,19 @@ export default function Dashboard() {
 
   const handleEventLoad = useCallback((info: ParsedEventInfo) => {
     setEventInfo(info);
+    setLiveDeviceId(null);
     setLoadedLap(null);
     setActiveTab("gauges");
   }, []);
+
+  const handleManualRegister = useCallback((id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed) return;
+    setEventInfo(null);
+    setLoadedLap(null);
+    setLiveDeviceId(trimmed);
+    manualRegister(trimmed);
+  }, [manualRegister]);
 
   const isConnected =
     connectionState === "connected" ||
@@ -206,7 +222,7 @@ export default function Dashboard() {
                   className="flex-1 bg-black border border-nova-border rounded px-2 py-1 text-xs text-nova-text placeholder-nova-muted focus:outline-none focus:border-nova-red"
                 />
                 <button
-                  onClick={() => manualDeviceId && manualRegister(manualDeviceId)}
+                  onClick={() => handleManualRegister(manualDeviceId)}
                   disabled={!manualDeviceId}
                   className="px-2 py-1 text-xs rounded border border-nova-red text-nova-red hover:bg-nova-red/10 disabled:opacity-40"
                 >
@@ -291,7 +307,7 @@ export default function Dashboard() {
                   onRefresh={listSessions}
                   onLoad={handleEventLoad}
                   onDirectConnect={(id) => {
-                    manualRegister(id);
+                    handleManualRegister(id);
                     setActiveTab("gauges");
                   }}
                 />

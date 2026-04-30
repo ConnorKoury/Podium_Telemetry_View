@@ -2,13 +2,15 @@
 
 import { useState, useEffect, useCallback } from "react";
 
-export type WidgetType = "line" | "gps";
+export type WidgetType = "line" | "scatter" | "gps";
 
 export interface ChartWidget {
   id: string;
   title: string;
   channels: string[];
   type: WidgetType;
+  xChannel?: string;
+  yChannel?: string;
 }
 
 const DEFAULT_WIDGETS: ChartWidget[] = [
@@ -21,18 +23,54 @@ function storageKey(k: string) {
   return `nova-charts-${k}`;
 }
 
+function defaultWidgets() {
+  return DEFAULT_WIDGETS.map((w) => ({ ...w, channels: [...w.channels] }));
+}
+
+function normalizeWidget(widget: Partial<ChartWidget>, index: number): ChartWidget | null {
+  if (!widget || typeof widget !== "object") return null;
+  const type = widget.type === "line" || widget.type === "scatter" || widget.type === "gps"
+    ? widget.type
+    : "line";
+
+  return {
+    id: typeof widget.id === "string" ? widget.id : `stored-${index}`,
+    title: typeof widget.title === "string"
+      ? widget.title
+      : type === "gps"
+        ? "GPS Trace"
+        : type === "scatter"
+          ? "Scatter Plot"
+          : "New Chart",
+    channels: Array.isArray(widget.channels) ? widget.channels.filter((ch): ch is string => typeof ch === "string") : [],
+    type,
+    xChannel: typeof widget.xChannel === "string" ? widget.xChannel : undefined,
+    yChannel: typeof widget.yChannel === "string" ? widget.yChannel : undefined,
+  };
+}
+
 export function useChartConfig(deviceKey: string | null) {
-  const [widgets, setWidgets] = useState<ChartWidget[]>(DEFAULT_WIDGETS);
+  const [widgets, setWidgets] = useState<ChartWidget[]>(() => defaultWidgets());
 
   useEffect(() => {
-    if (!deviceKey) return;
+    if (!deviceKey) {
+      setWidgets(defaultWidgets());
+      return;
+    }
     try {
       const raw = localStorage.getItem(storageKey(deviceKey));
       if (raw) {
-        const parsed = JSON.parse(raw) as ChartWidget[];
-        if (Array.isArray(parsed) && parsed.length > 0) setWidgets(parsed);
+        const parsed = JSON.parse(raw) as Partial<ChartWidget>[];
+        const normalized = Array.isArray(parsed)
+          ? parsed.map(normalizeWidget).filter((w): w is ChartWidget => w !== null)
+          : [];
+        if (normalized.length > 0) {
+          setWidgets(normalized);
+          return;
+        }
       }
     } catch { /* ignore */ }
+    setWidgets(defaultWidgets());
   }, [deviceKey]);
 
   const persist = useCallback((ws: ChartWidget[]) => {
@@ -44,7 +82,7 @@ export function useChartConfig(deviceKey: string | null) {
 
   const addWidget = useCallback((type: WidgetType) => {
     const id = `w-${Date.now()}`;
-    const title = type === "gps" ? "GPS Trace" : "New Chart";
+    const title = type === "gps" ? "GPS Trace" : type === "scatter" ? "Scatter Plot" : "New Chart";
     persist([...widgets, { id, title, channels: [], type }]);
   }, [widgets, persist]);
 

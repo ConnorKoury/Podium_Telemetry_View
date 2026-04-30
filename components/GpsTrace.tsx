@@ -57,6 +57,16 @@ function gpsKeys(history: TimeSeriesPoint[]): { latKey: string; lngKey: string }
   return null;
 }
 
+function normalizeCoordinate(value: unknown, limit: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (Math.abs(value) <= limit) return value;
+
+  // Some telemetry exports encode coordinates as integer degrees * 1e7.
+  const scaled = value / 10_000_000;
+  if (Math.abs(scaled) <= limit) return scaled;
+  return null;
+}
+
 // ── Google Maps script loader (singleton) ────────────────────────────────────
 
 let _mapsPromise: Promise<void> | null = null;
@@ -147,8 +157,13 @@ function SvgTrace({ pts, maxSpeed }: { pts: GpsPt[]; maxSpeed: number }) {
   const first = pts[0], last = pts[pts.length - 1];
 
   return (
-    <div className="relative" style={{ borderRadius: 6, overflow: "hidden" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ background: "#0d0d0d", display: "block" }}>
+    <div className="relative w-full" style={{ aspectRatio: `${W} / ${H}`, borderRadius: 6, overflow: "hidden" }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="h-full w-full"
+        style={{ background: "#0d0d0d", display: "block" }}
+      >
         {pts.slice(0, -1).map((p, i) => {
           const n = pts[i + 1];
           return (
@@ -174,10 +189,18 @@ function SvgTrace({ pts, maxSpeed }: { pts: GpsPt[]; maxSpeed: number }) {
 
 function MapsTrace({ pts, maxSpeed, apiKey }: { pts: GpsPt[]; maxSpeed: number; apiKey: string }) {
   const mapDivRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const polylinesRef = useRef<google.maps.Polyline[]>([]);
+  const markersRef = useRef<google.maps.Marker[]>([]);
+  const redrawTimerRef = useRef<number | null>(null);
+  const latestRef = useRef({ pts, maxSpeed });
+  const fittedBoundsRef = useRef<{ minLat: number; maxLat: number; minLng: number; maxLng: number } | null>(null);
+  const hasEnoughPoints = pts.length >= 2;
 
+  latestRef.current = { pts, maxSpeed };
 
   useEffect(() => {
-    if (!mapDivRef.current || pts.length < 2) return;
+    if (!mapDivRef.current || !hasEnoughPoints) return;
     let cancelled = false;
 
     async function init() {
@@ -185,29 +208,79 @@ function MapsTrace({ pts, maxSpeed, apiKey }: { pts: GpsPt[]; maxSpeed: number; 
       if (cancelled || !mapDivRef.current) return;
       const g = window.google.maps;
 
-      const map = new g.Map(mapDivRef.current, {
-        mapTypeId: "satellite" as google.maps.MapTypeId,
-        disableDefaultUI: true,
-        zoomControl: true,
-        gestureHandling: "cooperative",
-        backgroundColor: "#0d0d0d",
-      });
-
-      // Draw per-segment polylines colored by speed
-      pts.slice(0, -1).forEach((p, i) => {
-        const n = pts[i + 1];
-        new g.Polyline({
-          path: [{ lat: p.lat, lng: p.lng }, { lat: n.lat, lng: n.lng }],
-          strokeColor: speedColorHex(p.speed, maxSpeed),
-          strokeWeight: 3,
-          strokeOpacity: 0.95,
-          map,
+      if (!mapRef.current) {
+        mapRef.current = new g.Map(mapDivRef.current, {
+          mapTypeId: "satellite" as google.maps.MapTypeId,
+          disableDefaultUI: true,
+          zoomControl: true,
+          gestureHandling: "cooperative",
+          backgroundColor: "#0d0d0d",
         });
-      });
+      }
+      scheduleRedraw(0);
+    }
 
-      // Start marker (green)
+    init().catch(console.error);
+    return () => { cancelled = true; };
+  }, [apiKey, hasEnoughPoints]);
+
+  useEffect(() => {
+    if (!mapDivRef.current) return;
+    const observer = new ResizeObserver(() => {
+      const map = mapRef.current;
+      if (!map || !window.google?.maps) return;
+      window.google.maps.event.trigger(map, "resize");
+      fittedBoundsRef.current = null;
+      scheduleRedraw(0);
+    });
+    observer.observe(mapDivRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  function scheduleRedraw(delay = 180) {
+    if (redrawTimerRef.current != null) window.clearTimeout(redrawTimerRef.current);
+    redrawTimerRef.current = window.setTimeout(() => {
+      redrawTimerRef.current = null;
+      redrawMap();
+    }, delay);
+  }
+
+  function shouldFit(next: { minLat: number; maxLat: number; minLng: number; maxLng: number }) {
+    const prev = fittedBoundsRef.current;
+    if (!prev) return true;
+    const latPad = Math.max((prev.maxLat - prev.minLat) * 0.05, 0.00005);
+    const lngPad = Math.max((prev.maxLng - prev.minLng) * 0.05, 0.00005);
+    return (
+      next.minLat < prev.minLat - latPad ||
+      next.maxLat > prev.maxLat + latPad ||
+      next.minLng < prev.minLng - lngPad ||
+      next.maxLng > prev.maxLng + lngPad
+    );
+  }
+
+  function redrawMap() {
+    const map = mapRef.current;
+    if (!map || !window.google?.maps) return;
+    const g = window.google.maps;
+    const { pts: latestPts, maxSpeed: latestMaxSpeed } = latestRef.current;
+    if (latestPts.length < 2) return;
+
+    polylinesRef.current.forEach((line) => line.setMap(null));
+    markersRef.current.forEach((marker) => marker.setMap(null));
+    polylinesRef.current = latestPts.slice(0, -1).map((p, i) => {
+      const n = latestPts[i + 1];
+      return new g.Polyline({
+        path: [{ lat: p.lat, lng: p.lng }, { lat: n.lat, lng: n.lng }],
+        strokeColor: speedColorHex(p.speed, latestMaxSpeed),
+        strokeWeight: 3,
+        strokeOpacity: 0.95,
+        map,
+      });
+    });
+
+    markersRef.current = [
       new g.Marker({
-        position: { lat: pts[0].lat, lng: pts[0].lng },
+        position: { lat: latestPts[0].lat, lng: latestPts[0].lng },
         map,
         title: "Start",
         icon: {
@@ -218,11 +291,9 @@ function MapsTrace({ pts, maxSpeed, apiKey }: { pts: GpsPt[]; maxSpeed: number; 
           strokeColor: "#fff",
           strokeWeight: 2,
         },
-      });
-
-      // End marker (red)
+      }),
       new g.Marker({
-        position: { lat: pts[pts.length - 1].lat, lng: pts[pts.length - 1].lng },
+        position: { lat: latestPts[latestPts.length - 1].lat, lng: latestPts[latestPts.length - 1].lng },
         map,
         title: "End",
         icon: {
@@ -233,20 +304,40 @@ function MapsTrace({ pts, maxSpeed, apiKey }: { pts: GpsPt[]; maxSpeed: number; 
           strokeColor: "#fff",
           strokeWeight: 2,
         },
-      });
+      }),
+    ];
 
-      // Fit map to track extent
+    const extents = latestPts.reduce(
+      (acc, p) => ({
+        minLat: Math.min(acc.minLat, p.lat),
+        maxLat: Math.max(acc.maxLat, p.lat),
+        minLng: Math.min(acc.minLng, p.lng),
+        maxLng: Math.max(acc.maxLng, p.lng),
+      }),
+      { minLat: Infinity, maxLat: -Infinity, minLng: Infinity, maxLng: -Infinity }
+    );
+    if (shouldFit(extents)) {
       const bounds = new g.LatLngBounds();
-      pts.forEach((p) => bounds.extend({ lat: p.lat, lng: p.lng }));
+      latestPts.forEach((p) => bounds.extend({ lat: p.lat, lng: p.lng }));
       map.fitBounds(bounds, 48);
+      fittedBoundsRef.current = extents;
     }
+  }
 
-    init().catch(console.error);
-    return () => { cancelled = true; };
-  }, [pts, maxSpeed, apiKey]);
+  useEffect(() => {
+    scheduleRedraw();
+    return () => {
+      if (redrawTimerRef.current != null) window.clearTimeout(redrawTimerRef.current);
+    };
+  }, [pts, maxSpeed]);
+
+  useEffect(() => () => {
+    polylinesRef.current.forEach((line) => line.setMap(null));
+    markersRef.current.forEach((marker) => marker.setMap(null));
+  }, []);
 
   return (
-    <div className="relative" style={{ height: 360, borderRadius: 6, overflow: "hidden" }}>
+    <div className="relative w-full min-h-[280px]" style={{ aspectRatio: "16 / 9", maxHeight: 520, borderRadius: 6, overflow: "hidden" }}>
       <div ref={mapDivRef} style={{ width: "100%", height: "100%" }} />
       <SpeedLegend maxSpeed={maxSpeed} />
     </div>
@@ -258,16 +349,22 @@ function MapsTrace({ pts, maxSpeed, apiKey }: { pts: GpsPt[]; maxSpeed: number; 
 export default function GpsTrace({ history }: GpsTraceProps) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
 
-  const keys = gpsKeys(history);
+  const keys = useMemo(() => gpsKeys(history), [history]);
   const pts = useMemo<GpsPt[]>(() => {
     if (!keys) return [];
     return history
       .filter((p) => p[keys.latKey] != null && p[keys.lngKey] != null)
-      .map((p) => ({
-        lat: p[keys.latKey] as number,
-        lng: p[keys.lngKey] as number,
-        speed: (p.GPS_Speed as number) ?? 0,
-      }));
+      .map((p) => {
+        const lat = normalizeCoordinate(p[keys.latKey], 90);
+        const lng = normalizeCoordinate(p[keys.lngKey], 180);
+        if (lat == null || lng == null) return null;
+        return {
+          lat,
+          lng,
+          speed: (p.GPS_Speed as number) ?? (p.Vehicle_Spe as number) ?? 0,
+        };
+      })
+      .filter((p): p is GpsPt => p !== null);
   }, [history, keys]);
 
   const maxSpeed = useMemo(() => Math.max(...pts.map((p) => p.speed), 1), [pts]);
