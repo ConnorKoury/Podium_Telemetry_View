@@ -4,6 +4,10 @@ const PODIUM_WS_URLS = [
   "wss://telemetry.podium.live",
 ];
 
+function toText(data: string | ArrayBuffer): string {
+  return typeof data === "string" ? data : new TextDecoder().decode(data);
+}
+
 function handleWsProxy(): Response {
   const pair = new WebSocketPair();
   const client = pair[0];
@@ -11,55 +15,65 @@ function handleWsProxy(): Response {
 
   server.accept();
 
-  let podium: WebSocket | null = null;
-  let urlIdx = 0;
+  let podiumRef: WebSocket | null = null;
 
-  function tryConnect(): void {
-    if (urlIdx >= PODIUM_WS_URLS.length) {
+  // Forward browser → Podium (fires after proxy_connected since browser waits for it)
+  server.addEventListener("message", (e: MessageEvent) => {
+    if (podiumRef?.readyState === WebSocket.OPEN) {
+      try { podiumRef.send(toText(e.data as string | ArrayBuffer)); } catch { /* closed */ }
+    }
+  });
+
+  server.addEventListener("close", () => {
+    try { podiumRef?.close(1000); } catch { /* already closed */ }
+  });
+
+  // Connect to Podium asynchronously with spoofed Origin so Podium accepts us
+  (async () => {
+    let connectedUrl = "";
+
+    for (const url of PODIUM_WS_URLS) {
+      try {
+        const res = await fetch(url, {
+          headers: {
+            Upgrade: "websocket",
+            Connection: "Upgrade",
+            Origin: "https://podium.live",
+            "User-Agent": "Mozilla/5.0",
+            "Sec-WebSocket-Version": "13",
+          },
+        });
+        const ws = (res as unknown as { webSocket: WebSocket | null }).webSocket;
+        if (res.status === 101 && ws) {
+          ws.accept();
+          podiumRef = ws;
+          connectedUrl = url;
+          break;
+        }
+      } catch { /* try next */ }
+    }
+
+    if (!podiumRef) {
       try { server.send(JSON.stringify({ type: "proxy_error", message: "All Podium WS endpoints failed" })); } catch { /* closed */ }
       server.close(1011);
       return;
     }
 
-    const url = PODIUM_WS_URLS[urlIdx]!;
-    const ws = new WebSocket(url);
-    podium = ws;
+    try { server.send(JSON.stringify({ type: "proxy_connected", url: connectedUrl })); } catch { return; }
 
-    ws.addEventListener("open", () => {
-      try { server.send(JSON.stringify({ type: "proxy_connected", url })); } catch { /* closed */ }
+    // Forward Podium → browser
+    podiumRef.addEventListener("message", (e: MessageEvent) => {
+      try { server.send(toText(e.data as string | ArrayBuffer)); } catch { /* closed */ }
     });
 
-    ws.addEventListener("message", (e: MessageEvent) => {
-      try {
-        const data = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data as ArrayBuffer);
-        server.send(data);
-      } catch { /* closed */ }
-    });
-
-    ws.addEventListener("close", (e: CloseEvent) => {
+    podiumRef.addEventListener("close", (e: CloseEvent) => {
       try { server.send(JSON.stringify({ type: "proxy_disconnected", code: e.code })); } catch { /* closed */ }
     });
 
-    ws.addEventListener("error", () => {
-      urlIdx++;
-      tryConnect();
+    podiumRef.addEventListener("error", () => {
+      try { server.send(JSON.stringify({ type: "proxy_error", message: "Podium connection error" })); } catch { /* closed */ }
     });
-  }
-
-  server.addEventListener("message", (e: MessageEvent) => {
-    if (podium?.readyState === WebSocket.OPEN) {
-      try {
-        const data = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data as ArrayBuffer);
-        podium.send(data);
-      } catch { /* closed */ }
-    }
-  });
-
-  server.addEventListener("close", () => {
-    try { podium?.close(1000); } catch { /* already closed */ }
-  });
-
-  tryConnect();
+  })();
 
   return new Response(null, { status: 101, webSocket: client });
 }
