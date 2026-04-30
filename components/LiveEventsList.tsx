@@ -165,7 +165,16 @@ export default function LiveEventsList({ onLoad, onDirectConnect }: LiveEventsLi
     setError(null);
     try {
       const res = await fetch("/api/live-events");
-      const data = await res.json() as { sessions: TelemetrySession[]; source?: string; error?: string };
+      const text = await res.text();
+      let data: { sessions: TelemetrySession[]; source?: string; error?: string };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setError("Live session listing unavailable.");
+        setSessions([]);
+        setFetchedAt(new Date());
+        return;
+      }
       if (data.error && !data.sessions?.length) {
         setError(data.error);
       }
