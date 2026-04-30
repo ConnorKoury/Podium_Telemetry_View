@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
+  ResponsiveContainer, Legend, type TooltipProps,
 } from "recharts";
 import type { TimeSeriesPoint } from "@/lib/types";
 import type { ChartWidget, WidgetType } from "@/hooks/useChartConfig";
@@ -93,6 +93,41 @@ function ChannelPicker({
   );
 }
 
+// ── Forward-fill: carry last value into gaps so the cursor doesn't flicker ────
+
+function forwardFill(history: TimeSeriesPoint[], channels: string[]): TimeSeriesPoint[] {
+  const last: Partial<Record<string, number>> = {};
+  return history.map((point) => {
+    const out: TimeSeriesPoint = { ...point };
+    for (const ch of channels) {
+      const v = point[ch];
+      if (typeof v === "number") {
+        last[ch] = v;
+        out[`${ch}__f`] = v; // fill key mirrors real value
+      } else if (last[ch] !== undefined) {
+        out[`${ch}__f`] = last[ch]!; // hold last value in gap
+      }
+    }
+    return out;
+  });
+}
+
+function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) {
+  if (!active || !payload?.length) return null;
+  const entries = payload.filter((p) => !String(p.dataKey).endsWith("__f"));
+  if (!entries.length) return null;
+  return (
+    <div style={{ background: "#1a1a1a", border: "1px solid #333", fontSize: 11, padding: "4px 8px", borderRadius: 4 }}>
+      <p style={{ color: "#888", marginBottom: 2 }}>{formatTime(Number(label))}</p>
+      {entries.map((p) => (
+        <p key={p.dataKey} style={{ color: p.color, margin: "1px 0" }}>
+          {p.name}: {typeof p.value === "number" ? p.value.toFixed(3) : "—"}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 // ── Single widget ─────────────────────────────────────────────────────────────
 
 function Widget({
@@ -119,6 +154,11 @@ function Widget({
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const activeChannels = widget.channels.filter((ch) => availableChannels.includes(ch) || availableChannels.length === 0);
+
+  const filledData = useMemo(
+    () => forwardFill(history, activeChannels),
+    [history, activeChannels]
+  );
 
   return (
     <div className="bg-nova-panel border border-nova-border rounded-lg overflow-visible">
@@ -203,7 +243,7 @@ function Widget({
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={history} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+            <LineChart data={filledData} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#222" />
               <XAxis
                 dataKey="t"
@@ -212,11 +252,22 @@ function Widget({
                 stroke="#333"
               />
               <YAxis tick={{ fill: "#888", fontSize: 10 }} stroke="#333" width={44} />
-              <Tooltip
-                contentStyle={{ background: "#1a1a1a", border: "1px solid #333", fontSize: 11 }}
-                labelFormatter={(v) => formatTime(Number(v))}
-              />
+              <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 10 }} />
+              {/* Grey hold lines — rendered first so real lines sit on top */}
+              {activeChannels.map((ch) => (
+                <Line
+                  key={`${ch}__f`}
+                  dataKey={`${ch}__f`}
+                  stroke="#484848"
+                  strokeWidth={1}
+                  dot={false}
+                  isAnimationActive={false}
+                  legendType="none"
+                  connectNulls={false}
+                />
+              ))}
+              {/* Real data lines */}
               {activeChannels.map((ch) => (
                 <Line
                   key={ch}
@@ -249,6 +300,13 @@ interface ChartsDashboardProps {
   onMoveWidget: (id: string, dir: -1 | 1) => void;
 }
 
+const TIME_WINDOWS = [
+  { label: "30s", seconds: 30 },
+  { label: "1m", seconds: 60 },
+  { label: "5m", seconds: 300 },
+  { label: "All", seconds: 0 },
+] as const;
+
 export default function ChartsDashboard({
   history,
   availableChannels,
@@ -258,11 +316,68 @@ export default function ChartsDashboard({
   onUpdateWidget,
   onMoveWidget,
 }: ChartsDashboardProps) {
+  const [paused, setPaused] = useState(false);
+  const [pausedAtLength, setPausedAtLength] = useState(0);
+  const [scrubPos, setScrubPos] = useState(1); // 0.0–1.0, 1 = newest
+  const [windowSeconds, setWindowSeconds] = useState(60);
+
+  function togglePause() {
+    if (!paused) {
+      setPausedAtLength(history.length);
+      setScrubPos(1);
+    }
+    setPaused((p) => !p);
+  }
+
+  const displayHistory = useMemo(() => {
+    // When paused, don't let the frozen window grow beyond pausedAtLength
+    const hardMax = paused ? Math.min(pausedAtLength, history.length) : history.length;
+    const endIdx = paused ? Math.round(scrubPos * (hardMax - 1)) : hardMax - 1;
+    const slice = history.slice(0, endIdx + 1);
+
+    if (windowSeconds === 0 || slice.length === 0) return slice;
+    const endTime = slice[slice.length - 1].t;
+    const startTime = endTime - windowSeconds * 1000;
+    return slice.filter((p) => p.t >= startTime);
+  }, [history, paused, pausedAtLength, scrubPos, windowSeconds]);
+
+  const canScrub = paused && pausedAtLength > 1;
+
   return (
     <div className="flex flex-col gap-4">
       {/* Toolbar */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-nova-dim uppercase tracking-widest">Charts</span>
+
+        {/* Time window */}
+        <div className="flex rounded overflow-hidden border border-nova-border text-[10px]">
+          {TIME_WINDOWS.map(({ label, seconds }) => (
+            <button
+              key={label}
+              onClick={() => setWindowSeconds(seconds)}
+              className={`px-2.5 py-1 transition-colors ${
+                windowSeconds === seconds
+                  ? "bg-nova-red/20 text-nova-red"
+                  : "text-nova-dim hover:text-nova-text"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Pause/Resume */}
+        <button
+          onClick={togglePause}
+          className={`text-[10px] px-3 py-1 rounded border transition-colors ${
+            paused
+              ? "border-amber-600/60 bg-amber-900/30 text-amber-400 hover:bg-amber-900/50"
+              : "border-nova-border text-nova-dim hover:text-nova-text"
+          }`}
+        >
+          {paused ? "▶ Resume" : "⏸ Pause"}
+        </button>
+
         <div className="ml-auto flex gap-2">
           <button
             onClick={() => onAddWidget("line")}
@@ -279,6 +394,27 @@ export default function ChartsDashboard({
         </div>
       </div>
 
+      {/* Scrub slider */}
+      {canScrub && (
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-amber-400 shrink-0">Scrub</span>
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            step={1}
+            value={Math.round(scrubPos * 1000)}
+            onChange={(e) => setScrubPos(Number(e.target.value) / 1000)}
+            className="flex-1 accent-amber-500 h-1"
+          />
+          {displayHistory.length > 0 && (
+            <span className="text-[10px] text-nova-muted font-mono shrink-0">
+              {formatTime(displayHistory[displayHistory.length - 1].t)}
+            </span>
+          )}
+        </div>
+      )}
+
       {widgets.length === 0 ? (
         <div className="flex items-center justify-center h-40 text-sm text-nova-dim">
           No charts. Add one above.
@@ -289,7 +425,7 @@ export default function ChartsDashboard({
             <Widget
               key={w.id}
               widget={w}
-              history={history}
+              history={displayHistory}
               availableChannels={availableChannels}
               onUpdate={(patch) => onUpdateWidget(w.id, patch)}
               onRemove={() => onRemoveWidget(w.id)}

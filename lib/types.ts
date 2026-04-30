@@ -48,8 +48,8 @@ export interface SensorPacket {
 
 export type ConnectionState =
   | "idle"
-  | "proxy_connecting"
-  | "proxy_connected"
+  | "connecting"
+  | "connected"
   | "registered"
   | "receiving"
   | "error"

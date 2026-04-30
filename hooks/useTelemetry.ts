@@ -3,22 +3,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ConnectionState,
-  IncomingMessage,
   ParsedEventInfo,
   SensorPacket,
   TelemetrySession,
   TimeSeriesPoint,
-  VertxMessage,
 } from "@/lib/types";
 import { decodeSensorValues } from "@/lib/podium-parser";
 import type { ChannelValue } from "@/lib/types";
 
-const MAX_HISTORY = 300;
+const PODIUM_WS_URLS = [
+  "wss://telemetry.podium.live/eventbus/websocket",
+  "wss://telemetry.podium.live/eventbus",
+  "wss://telemetry.podium.live",
+];
+
+const MAX_HISTORY = 3600;
 const MAX_PACKETS = 20;
+const PING_INTERVAL = 5_000;
 
 interface TelemetryState {
   connectionState: ConnectionState;
-  proxyUrl: string | null;
+  podiumUrl: string | null;
   sessions: TelemetrySession[];
   latestValues: Record<string, number | null>;
   history: TimeSeriesPoint[];
@@ -30,7 +35,7 @@ interface TelemetryState {
 
 const INITIAL_STATE: TelemetryState = {
   connectionState: "idle",
-  proxyUrl: null,
+  podiumUrl: null,
   sessions: [],
   latestValues: {},
   history: [],
@@ -43,29 +48,31 @@ const INITIAL_STATE: TelemetryState = {
 export function useTelemetry(eventInfo: ParsedEventInfo | null) {
   const [state, setState] = useState<TelemetryState>(INITIAL_STATE);
   const wsRef = useRef<WebSocket | null>(null);
+  const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const registeredRef = useRef<string | null>(null);
   const pendingDeviceRef = useRef<string | null>(null);
+  const eventInfoRef = useRef(eventInfo);
+  useEffect(() => { eventInfoRef.current = eventInfo; }, [eventInfo]);
 
   const send = useCallback((msg: object) => {
-    wsRef.current?.send(JSON.stringify(msg));
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg));
+    }
   }, []);
 
   const registerForDevice = useCallback(
     (eventDeviceId: string) => {
       if (registeredRef.current === eventDeviceId) return;
-      // If not connected yet, queue it — proxy_connected handler will pick it up
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         pendingDeviceRef.current = eventDeviceId;
         return;
       }
       registeredRef.current = eventDeviceId;
-
-      const addresses = [
+      for (const address of [
         `sensorData.${eventDeviceId}`,
         `event.${eventDeviceId}`,
         `alertmessage.${eventDeviceId}`,
-      ];
-      for (const address of addresses) {
+      ]) {
         send({ type: "register", address, headers: {} });
       }
       setState((s) => ({ ...s, connectionState: "registered" }));
@@ -74,158 +81,137 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
   );
 
   const listSessions = useCallback(() => {
-    const replyAddress = `reply.sessions.${Date.now()}`;
     send({
       type: "send",
       address: "listTelemetryStreamSessions",
       headers: {},
       body: {},
-      replyAddress,
+      replyAddress: `reply.sessions.${Date.now()}`,
     });
   }, [send]);
 
   const connect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-
-    setState((s) => ({ ...s, connectionState: "proxy_connecting", lastError: null }));
+    wsRef.current?.close(1000);
+    if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+    setState((s) => ({ ...s, connectionState: "connecting", lastError: null }));
     registeredRef.current = null;
 
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsPort = process.env.NEXT_PUBLIC_WS_PORT ?? "3001";
-    const wsUrl = `${protocol}://${window.location.hostname}:${wsPort}/ws`;
+    let urlIdx = 0;
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      // proxy_connected message will come from the Bun server
-    };
-
-    ws.onmessage = (event) => {
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(event.data as string) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-
-      const msgType = msg.type as string | undefined;
-
-      // Proxy meta messages injected by ws-server.ts (always have a type)
-      if (msgType === "proxy_connected") {
-        setState((s) => ({
-          ...s,
-          connectionState: "proxy_connected",
-          proxyUrl: (msg.url as string) ?? null,
-        }));
-        send({ type: "ping" });
-        listSessions();
-        const deviceToRegister = eventInfo?.eventDeviceId ?? pendingDeviceRef.current;
-        if (deviceToRegister) {
-          pendingDeviceRef.current = null;
-          setTimeout(() => registerForDevice(deviceToRegister), 500);
-        }
-        return;
-      }
-      if (msgType === "proxy_disconnected") {
-        setState((s) => ({
-          ...s,
-          connectionState: "disconnected",
-          lastError: `Disconnected: code ${(msg.code as number) ?? "?"}`,
-        }));
-        return;
-      }
-      if (msgType === "proxy_error") {
+    function tryNext() {
+      if (urlIdx >= PODIUM_WS_URLS.length) {
         setState((s) => ({
           ...s,
           connectionState: "error",
-          lastError: (msg.message as string) ?? "WebSocket proxy error",
+          lastError: "All Podium endpoints unreachable",
         }));
         return;
       }
 
-      // Standard Vert.x protocol
-      if (msgType === "pong") return;
-      if (msgType === "err") {
-        setState((s) => ({
-          ...s,
-          lastError: (msg.message as string) ?? `EventBus error: ${msg.failureType}`,
-        }));
-        return;
-      }
+      const url = PODIUM_WS_URLS[urlIdx++];
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+      let connected = false;
+      let movedOn = false;
 
-      // Podium data messages: type is ABSENT — they only have {address, body}
-      // Do NOT gate on type === "message"; just check for address presence.
-      if (typeof msg.address === "string") {
-        handleAddressedMessage(msg.address, msg.body);
-      }
-    };
+      ws.onopen = () => {
+        connected = true;
+        setState((s) => ({ ...s, connectionState: "connected", podiumUrl: url }));
 
-    ws.onclose = (ev) => {
-      setState((s) => ({
-        ...s,
-        connectionState: s.connectionState === "proxy_connecting" ? "error" : "disconnected",
-        lastError: ev.code !== 1000 ? `WebSocket closed (${ev.code})` : null,
-      }));
-    };
+        send({ type: "ping" });
+        pingTimerRef.current = setInterval(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            send({ type: "ping" });
+          }
+        }, PING_INTERVAL);
 
-    ws.onerror = () => {
-      setState((s) => ({
-        ...s,
-        connectionState: "error",
-        lastError: "Could not connect to local proxy. Is the server running?",
-      }));
-    };
+        listSessions();
 
-    function handleAddressedMessage(address: string, body: unknown) {
-      if (!address) return;
-
-      // Session list reply
-      if (address.startsWith("reply.sessions.")) {
-        const sessions = parseSessions(body);
-        setState((s) => ({ ...s, sessions }));
-        // Auto-register for the first active session if we don't have one already
-        if (!eventInfo?.eventDeviceId && sessions.length > 0) {
-          const active = sessions.find((s) => s.active) ?? sessions[0];
-          registerForDevice(active.eventDeviceId);
+        const device = eventInfoRef.current?.eventDeviceId ?? pendingDeviceRef.current;
+        if (device) {
+          pendingDeviceRef.current = null;
+          setTimeout(() => registerForDevice(device), 300);
         }
+      };
+
+      ws.onmessage = (event) => {
+        let msg: Record<string, unknown>;
+        try { msg = JSON.parse(event.data as string) as Record<string, unknown>; }
+        catch { return; }
+
+        const msgType = msg.type as string | undefined;
+        if (msgType === "pong") return;
+        if (msgType === "err") {
+          setState((s) => ({
+            ...s,
+            lastError: (msg.message as string) ?? `EventBus error: ${msg.failureType}`,
+          }));
+          return;
+        }
+
+        if (typeof msg.address === "string") {
+          handleMessage(msg.address, msg.body);
+        }
+      };
+
+      ws.onerror = () => {
+        if (!connected && !movedOn) {
+          movedOn = true;
+          tryNext();
+        }
+      };
+
+      ws.onclose = (ev) => {
+        if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+        if (wsRef.current !== ws) return;
+        if (!connected && !movedOn) {
+          movedOn = true;
+          tryNext();
+          return;
+        }
+        if (connected) {
+          setState((s) => ({
+            ...s,
+            connectionState: ev.code === 1000 ? "disconnected" : "error",
+            lastError: ev.code !== 1000 ? `Disconnected (code ${ev.code})` : null,
+          }));
+        }
+      };
+    }
+
+    function handleMessage(address: string, body: unknown) {
+      if (address.startsWith("reply.sessions.")) {
+        setState((s) => ({ ...s, sessions: parseSessions(body) }));
         return;
       }
 
-      // Sensor data
       if (address.startsWith("sensorData.")) {
         const packet = parseSensorData(body);
         if (!packet) return;
-
         const decoded = decodeSensorValues(packet.values);
         const point: TimeSeriesPoint = { t: packet.timestamp, ...decoded };
-
-        setState((s) => {
-          const newHistory = [...s.history, point].slice(-MAX_HISTORY);
-          const newPackets = [packet, ...s.recentPackets].slice(0, MAX_PACKETS);
-          return {
-            ...s,
-            connectionState: "receiving",
-            latestValues: { ...s.latestValues, ...decoded },
-            history: newHistory,
-            recentPackets: newPackets,
-            packetCount: s.packetCount + 1,
-            lastPacketAt: Date.now(),
-          };
-        });
+        setState((s) => ({
+          ...s,
+          connectionState: "receiving",
+          latestValues: { ...s.latestValues, ...decoded },
+          history: [...s.history, point].slice(-MAX_HISTORY),
+          recentPackets: [packet, ...s.recentPackets].slice(0, MAX_PACKETS),
+          packetCount: s.packetCount + 1,
+          lastPacketAt: Date.now(),
+        }));
         return;
       }
 
-      // Alert messages
       if (address.startsWith("alertmessage.")) {
         console.log("[Alert]", body);
       }
     }
-  }, [eventInfo, listSessions, registerForDevice, send]);
+
+    tryNext();
+  }, [send, listSessions, registerForDevice]);
 
   const disconnect = useCallback(() => {
+    if (pingTimerRef.current) clearInterval(pingTimerRef.current);
     wsRef.current?.close(1000, "User disconnect");
     wsRef.current = null;
     registeredRef.current = null;
@@ -233,55 +219,45 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
   }, []);
 
   const manualRegister = useCallback(
-    (eventDeviceId: string) => {
-      registerForDevice(eventDeviceId);
-    },
+    (eventDeviceId: string) => registerForDevice(eventDeviceId),
     [registerForDevice]
   );
 
-  // Disconnect when event changes
+  // Auto-connect on mount
   useEffect(() => {
+    connect();
     return () => {
+      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
       wsRef.current?.close(1000);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { ...state, connect, disconnect, manualRegister, listSessions };
 }
 
-// Real format: {"status":"ok","values":[77398, 77399, ...]}
 function parseSessions(body: unknown): TelemetrySession[] {
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
     if (b.status === "ok" && Array.isArray(b.values)) {
-      return (b.values as number[]).map((id) => ({
-        eventDeviceId: String(id),
-        active: true,
-      }));
+      return (b.values as number[]).map((id) => ({ eventDeviceId: String(id), active: true }));
     }
     if (Array.isArray(b.sessions)) return b.sessions as TelemetrySession[];
   }
   if (Array.isArray(body)) {
-    return (body as unknown[]).map((id) => ({
-      eventDeviceId: String(id),
-      active: true,
-    }));
+    return (body as unknown[]).map((id) => ({ eventDeviceId: String(id), active: true }));
   }
   return [];
 }
 
-// Real format: {eventDeviceId, timestamp:{"$date":"ISO"}, values:[{name,value},...], tick}
 function parseSensorData(body: unknown): SensorPacket | null {
   if (!body || typeof body !== "object") return null;
   const b = body as Record<string, unknown>;
 
-  // Parse timestamp — real format is {"$date": "ISO string"}
   let timestamp = Date.now();
   if (b.timestamp && typeof b.timestamp === "object") {
     const ts = b.timestamp as Record<string, unknown>;
-    if (typeof ts["$date"] === "string") {
-      timestamp = new Date(ts["$date"]).getTime();
-    }
+    if (typeof ts["$date"] === "string") timestamp = new Date(ts["$date"]).getTime();
   } else if (typeof b.timestamp === "number") {
     timestamp = b.timestamp;
   }

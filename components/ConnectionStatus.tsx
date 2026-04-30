@@ -4,9 +4,9 @@ import type { ConnectionState } from "@/lib/types";
 
 const STATE_LABELS: Record<ConnectionState, string> = {
   idle: "Idle",
-  proxy_connecting: "Connecting…",
-  proxy_connected: "Connected",
-  registered: "Registered",
+  connecting: "Connecting…",
+  connected: "Connected",
+  registered: "Subscribed",
   receiving: "Live",
   error: "Error",
   disconnected: "Disconnected",
@@ -14,8 +14,8 @@ const STATE_LABELS: Record<ConnectionState, string> = {
 
 const STATE_COLORS: Record<ConnectionState, string> = {
   idle: "bg-nova-muted",
-  proxy_connecting: "bg-yellow-500",
-  proxy_connected: "bg-blue-500",
+  connecting: "bg-yellow-500",
+  connected: "bg-blue-500",
   registered: "bg-blue-400",
   receiving: "bg-green-500",
   error: "bg-red-500",
@@ -43,7 +43,7 @@ export default function ConnectionStatus({
   onDisconnect,
   disabled,
 }: Props) {
-  const isActive = state === "proxy_connecting" || state === "proxy_connected" ||
+  const isActive = state === "connecting" || state === "connected" ||
     state === "registered" || state === "receiving";
 
   return (
@@ -91,7 +91,7 @@ export default function ConnectionStatus({
       </div>
 
       {proxyUrl && (
-        <p className="text-xs text-nova-dim">via {proxyUrl}</p>
+        <p className="text-xs text-nova-dim font-mono truncate">{proxyUrl.replace("wss://", "")}</p>
       )}
 
       {lastError && (

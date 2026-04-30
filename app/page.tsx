@@ -70,7 +70,8 @@ export default function Dashboard() {
 
   const {
     connectionState,
-    proxyUrl,
+    podiumUrl,
+    sessions,
     latestValues,
     history,
     recentPackets,
@@ -80,6 +81,7 @@ export default function Dashboard() {
     connect,
     disconnect,
     manualRegister,
+    listSessions,
   } = useTelemetry(eventInfo);
 
   const deviceKey = eventInfo?.eventDeviceId ?? eventInfo?.deviceId ?? null;
@@ -98,13 +100,20 @@ export default function Dashboard() {
     return out;
   }, [loadedLap, latestValues]);
 
-  // Channels available for charting
+  // Channels available for charting — latestValues accumulates all seen channel names
   const availableChannels = useMemo(() => {
     if (loadedLap) return loadedLap.channels.sort();
     if (eventInfo?.sensorList.length) return eventInfo.sensorList.map((s) => s.name).sort();
-    if (history.length > 0) return Object.keys(history[history.length - 1]).filter((k) => k !== "t").sort();
+    const live = Object.keys(latestValues).sort();
+    if (live.length > 0) return live;
     return [];
-  }, [loadedLap, eventInfo, history]);
+  }, [loadedLap, eventInfo, latestValues]);
+
+  // Synthetic sensor list built from live channel names when no eventInfo
+  const liveSensors = useMemo(
+    () => availableChannels.map((name, i) => ({ index: i, name })),
+    [availableChannels]
+  );
 
   const handleEventLoad = useCallback((info: ParsedEventInfo) => {
     setEventInfo(info);
@@ -113,7 +122,7 @@ export default function Dashboard() {
   }, []);
 
   const isConnected =
-    connectionState === "proxy_connected" ||
+    connectionState === "connected" ||
     connectionState === "registered" ||
     connectionState === "receiving";
 
@@ -161,13 +170,12 @@ export default function Dashboard() {
           )}
           <ConnectionStatus
             state={connectionState}
-            proxyUrl={proxyUrl}
+            proxyUrl={podiumUrl}
             lastError={lastError}
             packetCount={packetCount}
             lastPacketAt={lastPacketAt}
             onConnect={connect}
             onDisconnect={disconnect}
-            disabled={!eventInfo}
           />
         </div>
       </header>
@@ -210,23 +218,29 @@ export default function Dashboard() {
 
           {/* Channel list */}
           <div className="flex-1 overflow-auto p-3">
-            {eventInfo && eventInfo.sensorList.length > 0 ? (
-              <>
-                <p className="text-xs text-nova-dim uppercase tracking-widest mb-2">
-                  Channels ({eventInfo.sensorList.length})
-                </p>
-                <SensorGrid
-                  sensors={eventInfo.sensorList}
-                  values={latestValues}
-                  onToggleChart={() => {}}
-                  charted={new Set()}
-                />
-              </>
-            ) : (
-              <div className="text-xs text-nova-dim text-center py-8">
-                Load an event to see channels.
-              </div>
-            )}
+            {(() => {
+              const sensors = eventInfo?.sensorList.length ? eventInfo.sensorList : liveSensors;
+              if (sensors.length === 0) {
+                return (
+                  <div className="text-xs text-nova-dim text-center py-8">
+                    {eventInfo ? "No channels." : "Connect to a live session to see channels."}
+                  </div>
+                );
+              }
+              return (
+                <>
+                  <p className="text-xs text-nova-dim uppercase tracking-widest mb-2">
+                    Channels ({sensors.length})
+                  </p>
+                  <SensorGrid
+                    sensors={sensors}
+                    values={latestValues}
+                    onToggleChart={() => {}}
+                    charted={new Set()}
+                  />
+                </>
+              );
+            })()}
           </div>
         </aside>
 
@@ -270,9 +284,13 @@ export default function Dashboard() {
                   </p>
                 </div>
                 <LiveEventsList
+                  sessions={sessions}
+                  loading={connectionState === "connecting"}
+                  error={lastError}
+                  podiumUrl={podiumUrl}
+                  onRefresh={listSessions}
                   onLoad={handleEventLoad}
                   onDirectConnect={(id) => {
-                    if (!isConnected) connect();
                     manualRegister(id);
                     setActiveTab("gauges");
                   }}
@@ -286,16 +304,20 @@ export default function Dashboard() {
 
             {activeTab === "channels" && (
               <div className="max-w-2xl">
-                {eventInfo && eventInfo.sensorList.length > 0 ? (
-                  <SensorGrid
-                    sensors={eventInfo.sensorList}
-                    values={displayLatestValues}
-                    onToggleChart={() => {}}
-                    charted={new Set()}
-                  />
-                ) : (
-                  <EmptyState message="Load an event page to see all channels." />
-                )}
+                {(() => {
+                  const sensors = eventInfo?.sensorList.length ? eventInfo.sensorList : liveSensors;
+                  if (sensors.length === 0) {
+                    return <EmptyState message="Connect to a live session or load an event to see channels." />;
+                  }
+                  return (
+                    <SensorGrid
+                      sensors={sensors}
+                      values={displayLatestValues}
+                      onToggleChart={() => {}}
+                      charted={new Set()}
+                    />
+                  );
+                })()}
               </div>
             )}
 

@@ -121,16 +121,7 @@ async function getSessions(): Promise<{ sessions: TelemetrySession[]; source: st
   for (const url of PODIUM_WS_URLS) {
     try {
       const { sessions, source } = await fetchSessionsFromPodium(url);
-      if (sessions.length === 0) return { sessions, source };
-
-      // Verify each session actually has live data — filter out ghost connections
-      const verified = await Promise.all(
-        sessions.map(async (s) => {
-          const active = await verifySessionActive(url, s.eventDeviceId);
-          return { ...s, active };
-        })
-      );
-      return { sessions: verified.filter((s) => s.active), source };
+      return { sessions, source };
     } catch {
       // try next
     }
