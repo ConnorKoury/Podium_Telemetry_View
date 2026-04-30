@@ -272,6 +272,7 @@ export default function Dashboard() {
                 <LiveEventsList
                   onLoad={handleEventLoad}
                   onDirectConnect={(id) => {
+                    if (!isConnected) connect();
                     manualRegister(id);
                     setActiveTab("gauges");
                   }}

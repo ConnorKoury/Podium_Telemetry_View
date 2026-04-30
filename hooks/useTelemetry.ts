@@ -44,6 +44,7 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
   const [state, setState] = useState<TelemetryState>(INITIAL_STATE);
   const wsRef = useRef<WebSocket | null>(null);
   const registeredRef = useRef<string | null>(null);
+  const pendingDeviceRef = useRef<string | null>(null);
 
   const send = useCallback((msg: object) => {
     wsRef.current?.send(JSON.stringify(msg));
@@ -52,6 +53,11 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
   const registerForDevice = useCallback(
     (eventDeviceId: string) => {
       if (registeredRef.current === eventDeviceId) return;
+      // If not connected yet, queue it — proxy_connected handler will pick it up
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        pendingDeviceRef.current = eventDeviceId;
+        return;
+      }
       registeredRef.current = eventDeviceId;
 
       const addresses = [
@@ -127,8 +133,10 @@ export function useTelemetry(eventInfo: ParsedEventInfo | null) {
         }));
         send({ type: "ping" });
         listSessions();
-        if (eventInfo?.eventDeviceId) {
-          setTimeout(() => registerForDevice(eventInfo.eventDeviceId!), 500);
+        const deviceToRegister = eventInfo?.eventDeviceId ?? pendingDeviceRef.current;
+        if (deviceToRegister) {
+          pendingDeviceRef.current = null;
+          setTimeout(() => registerForDevice(deviceToRegister), 500);
         }
         return;
       }

@@ -30,6 +30,7 @@ jobs:
           PODIUM_EMAIL: ${{ secrets.PODIUM_EMAIL }}
           PODIUM_PASSWORD: ${{ secrets.PODIUM_PASSWORD }}
           NEXT_PUBLIC_GOOGLE_MAPS_KEY: ${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_KEY }}
+          NEXT_PUBLIC_WS_SERVER_URL: ${{ secrets.NEXT_PUBLIC_WS_SERVER_URL }}
 
       - name: Deploy WebSocket Worker
         uses: cloudflare/wrangler-action@v3
