@@ -28,6 +28,7 @@ export interface WarningLogEntry {
 }
 
 const MAX_LOG_ENTRIES = 200;
+const WARNING_HOLD_MS = 5_000;
 
 const DEFAULT_WARNINGS: WarningDefinition[] = [
   { id: "fuel-pressure", name: "Fuel Pressure", display: "Fuel pressure", channel: "Motec_Warni", equals: 4, enabled: true },
@@ -206,4 +207,42 @@ export function useWarningLog(deviceKey: string | null, activeWarnings: ActiveWa
   }, [deviceKey]);
 
   return useMemo(() => ({ log, clearLog }), [log, clearLog]);
+}
+
+export function useHeldWarnings(activeWarnings: ActiveWarning[], holdMs = WARNING_HOLD_MS) {
+  const [heldWarnings, setHeldWarnings] = useState<ActiveWarning[]>([]);
+
+  useEffect(() => {
+    const now = Date.now();
+    setHeldWarnings((current) => {
+      const merged = new Map<string, ActiveWarning>();
+
+      for (const warning of current) {
+        if (now - warning.activatedAt < holdMs) {
+          merged.set(warning.id, warning);
+        }
+      }
+
+      for (const warning of activeWarnings) {
+        merged.set(warning.id, warning);
+      }
+
+      return Array.from(merged.values()).sort((a, b) => b.activatedAt - a.activatedAt);
+    });
+  }, [activeWarnings, holdMs]);
+
+  useEffect(() => {
+    if (heldWarnings.length === 0) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setHeldWarnings((current) =>
+        current.filter((warning) =>
+          activeWarnings.some((active) => active.id === warning.id) || now - warning.activatedAt < holdMs
+        )
+      );
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [activeWarnings, heldWarnings.length, holdMs]);
+
+  return heldWarnings;
 }

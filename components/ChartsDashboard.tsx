@@ -257,7 +257,7 @@ function Widget({
   return (
     <div className="bg-nova-panel border border-nova-border rounded-lg overflow-visible">
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-nova-border">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-nova-border">
         {editingTitle ? (
           <input
             autoFocus
@@ -265,18 +265,18 @@ function Widget({
             onChange={(e) => setDraft(e.target.value)}
             onBlur={() => { onUpdate({ title: draft }); setEditingTitle(false); }}
             onKeyDown={(e) => { if (e.key === "Enter") { onUpdate({ title: draft }); setEditingTitle(false); } if (e.key === "Escape") setEditingTitle(false); }}
-            className="flex-1 bg-black border border-nova-border rounded px-2 py-0.5 text-xs text-nova-text focus:outline-none focus:border-nova-red"
+            className="min-w-32 flex-1 bg-black border border-nova-border rounded px-2 py-0.5 text-xs text-nova-text focus:outline-none focus:border-nova-red"
           />
         ) : (
           <button
             onClick={() => { setDraft(widget.title); setEditingTitle(true); }}
-            className="flex-1 text-left text-xs font-semibold text-nova-text hover:text-nova-red transition-colors truncate"
+            className="min-w-32 flex-1 text-left text-xs font-semibold text-nova-text hover:text-nova-red transition-colors truncate"
           >
             {widget.title}
           </button>
         )}
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-1 flex-shrink-0">
           {/* Type toggle */}
           <div className="flex rounded overflow-hidden border border-nova-border text-[10px]">
             <button
@@ -523,31 +523,35 @@ export default function ChartsDashboard({
   onMoveWidget,
 }: ChartsDashboardProps) {
   const [paused, setPaused] = useState(false);
-  const [pausedAtLength, setPausedAtLength] = useState(0);
+  const [pausedHistory, setPausedHistory] = useState<TimeSeriesPoint[]>([]);
   const [scrubPos, setScrubPos] = useState(1); // 0.0–1.0, 1 = newest
   const [windowSeconds, setWindowSeconds] = useState(60);
 
   function togglePause() {
-    if (!paused) {
-      setPausedAtLength(history.length);
+    setPaused((current) => {
+      if (!current) {
+        setPausedHistory(history);
+        setScrubPos(1);
+        return true;
+      }
+      setPausedHistory([]);
       setScrubPos(1);
-    }
-    setPaused((p) => !p);
+      return false;
+    });
   }
 
   const displayHistory = useMemo(() => {
-    // When paused, don't let the frozen window grow beyond pausedAtLength
-    const hardMax = paused ? Math.min(pausedAtLength, history.length) : history.length;
-    const endIdx = paused ? Math.round(scrubPos * (hardMax - 1)) : hardMax - 1;
-    const slice = history.slice(0, endIdx + 1);
+    const source = paused ? pausedHistory : history;
+    const endIdx = paused ? Math.round(scrubPos * (source.length - 1)) : source.length - 1;
+    const slice = source.slice(0, endIdx + 1);
 
     if (windowSeconds === 0 || slice.length === 0) return slice;
     const endTime = slice[slice.length - 1].t;
     const startTime = endTime - windowSeconds * 1000;
     return slice.filter((p) => p.t >= startTime);
-  }, [history, paused, pausedAtLength, scrubPos, windowSeconds]);
+  }, [history, paused, pausedHistory, scrubPos, windowSeconds]);
 
-  const canScrub = paused && pausedAtLength > 1;
+  const canScrub = paused && pausedHistory.length > 1;
 
   return (
     <div className="flex flex-col gap-4">
@@ -584,7 +588,7 @@ export default function ChartsDashboard({
           {paused ? "▶ Resume" : "⏸ Pause"}
         </button>
 
-        <div className="ml-auto flex gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:ml-auto sm:w-auto">
           <button
             onClick={() => onAddWidget("line")}
             className="text-xs px-3 py-1 rounded border border-nova-border text-nova-dim hover:text-nova-text hover:border-nova-muted transition-colors"

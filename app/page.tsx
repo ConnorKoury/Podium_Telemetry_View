@@ -5,7 +5,7 @@ import type { LapData, ParsedEventInfo } from "@/lib/types";
 import { GAUGE_CONFIG, KEY_GAUGES } from "@/lib/types";
 import { useTelemetry } from "@/hooks/useTelemetry";
 import { useChartConfig } from "@/hooks/useChartConfig";
-import { evaluateWarnings, useWarningConfig, useWarningLog } from "@/hooks/useWarningConfig";
+import { evaluateWarnings, useHeldWarnings, useWarningConfig, useWarningLog } from "@/hooks/useWarningConfig";
 import EventSelector from "@/components/EventSelector";
 import ConnectionStatus from "@/components/ConnectionStatus";
 import GaugeCard from "@/components/GaugeCard";
@@ -69,6 +69,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("discover");
   const [manualDeviceId, setManualDeviceId] = useState("");
   const [liveDeviceId, setLiveDeviceId] = useState<string | null>(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const sidebar = useSidebarResize();
 
   const {
@@ -122,6 +123,7 @@ export default function Dashboard() {
     () => evaluateWarnings(warningDefinitions, displayLatestValues),
     [warningDefinitions, displayLatestValues]
   );
+  const heldWarnings = useHeldWarnings(activeWarnings);
   const { log: warningLog, clearLog: clearWarningLog } = useWarningLog(deviceKey, activeWarnings);
 
   // Synthetic sensor list built from live channel names when no eventInfo
@@ -154,10 +156,16 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-nova-dark flex flex-col">
       {/* Header */}
-      <header className="border-b border-nova-border bg-nova-panel px-6 py-3 flex items-center gap-4 flex-shrink-0">
-        <div className="flex items-center gap-3">
+      <header className="border-b border-nova-border bg-nova-panel px-3 py-3 sm:px-6 flex flex-wrap items-center gap-3 flex-shrink-0">
+        <button
+          onClick={() => setMobileSidebarOpen(true)}
+          className="md:hidden rounded border border-nova-border px-2 py-1 text-xs text-nova-dim hover:border-nova-muted hover:text-nova-text"
+        >
+          Menu
+        </button>
+        <div className="flex min-w-0 items-center gap-3">
           <div className="w-2 h-6 bg-nova-red rounded-sm" />
-          <div>
+          <div className="min-w-0">
             <h1 className="text-sm font-bold tracking-widest uppercase text-nova-text">
               NovaRacing Telemetry
             </h1>
@@ -167,7 +175,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-4">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-4">
           {/* Data source indicator */}
           {loadedLap ? (
             <div className="flex items-center gap-2">
@@ -205,14 +213,33 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <ActiveWarningsBanner warnings={activeWarnings} onOpen={() => setActiveTab("warnings")} />
+      <ActiveWarningsBanner warnings={heldWarnings} onOpen={() => setActiveTab("warnings")} />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-visible md:overflow-hidden">
+        {mobileSidebarOpen && (
+          <button
+            onClick={() => setMobileSidebarOpen(false)}
+            className="fixed inset-0 z-40 bg-black/70 md:hidden"
+            aria-label="Close sidebar"
+          />
+        )}
+
         {/* Resizable sidebar */}
         <aside
-          className="border-r border-nova-border bg-nova-panel flex flex-col overflow-hidden flex-shrink-0"
-          style={{ width: sidebar.width }}
+          className={`fixed inset-y-0 left-0 z-50 flex w-[min(86vw,360px)] flex-col overflow-hidden border-r border-nova-border bg-nova-panel transition-transform md:static md:z-auto md:w-auto md:translate-x-0 md:flex-shrink-0 ${
+            mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+          style={{ width: `min(86vw, ${sidebar.width}px)` }}
         >
+          <div className="flex items-center justify-between border-b border-nova-border p-3 md:hidden">
+            <span className="text-xs uppercase tracking-widest text-nova-dim">Setup</span>
+            <button
+              onClick={() => setMobileSidebarOpen(false)}
+              className="rounded border border-nova-border px-2 py-1 text-xs text-nova-dim hover:border-nova-muted hover:text-nova-text"
+            >
+              Close
+            </button>
+          </div>
           <div className="p-4 border-b border-nova-border">
             <p className="text-xs text-nova-dim uppercase tracking-widest mb-3">Event Setup</p>
             <EventSelector onLoad={handleEventLoad} />
@@ -274,18 +301,18 @@ export default function Dashboard() {
         {/* Drag handle */}
         <div
           onMouseDown={sidebar.onMouseDown}
-          className="w-1 flex-shrink-0 cursor-col-resize bg-nova-border hover:bg-nova-red/50 transition-colors active:bg-nova-red"
+          className="hidden w-1 flex-shrink-0 cursor-col-resize bg-nova-border transition-colors hover:bg-nova-red/50 active:bg-nova-red md:block"
         />
 
         {/* Main content */}
-        <main className="flex-1 overflow-auto flex flex-col min-w-0">
+        <main className="flex min-w-0 flex-1 flex-col overflow-visible md:overflow-auto">
           {/* Tabs */}
-          <div className="border-b border-nova-border bg-nova-panel flex items-center gap-1 px-4 flex-shrink-0">
+          <div className="flex flex-shrink-0 items-center gap-1 overflow-x-auto border-b border-nova-border bg-nova-panel px-2 sm:px-4">
             {(["discover", "gauges", "channels", "chart", "warnings", "packets", "history"] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`px-4 py-3 text-xs uppercase tracking-widest transition-colors border-b-2 ${
+                className={`shrink-0 px-3 py-3 text-xs uppercase tracking-widest transition-colors border-b-2 sm:px-4 ${
                   activeTab === tab
                     ? "border-nova-red text-nova-text"
                     : "border-transparent text-nova-dim hover:text-nova-text"
@@ -306,7 +333,7 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <div className="flex-1 p-6 overflow-auto">
+          <div className="min-w-0 flex-1 overflow-visible p-3 sm:p-6 md:overflow-auto">
             {activeTab === "discover" && (
               <div className="max-w-2xl">
                 <div className="mb-5">
@@ -406,7 +433,7 @@ export default function Dashboard() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t border-nova-border bg-nova-panel px-4 py-1.5 flex items-center gap-4 text-[11px] text-nova-dim flex-shrink-0">
+      <footer className="flex flex-shrink-0 flex-wrap items-center gap-2 border-t border-nova-border bg-nova-panel px-3 py-1.5 text-[11px] text-nova-dim sm:gap-4 sm:px-4">
         <span>State: <span className="text-nova-text">{connectionState}</span></span>
         {eventInfo && (
           <>
