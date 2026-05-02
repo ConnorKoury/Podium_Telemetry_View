@@ -11,12 +11,34 @@ export interface ChartWidget {
   type: WidgetType;
   xChannel?: string;
   yChannel?: string;
+  axisByChannel?: Record<string, "left" | "right">;
 }
 
 const DEFAULT_WIDGETS: ChartWidget[] = [
-  { id: "d1", title: "Speed & Engine", channels: ["GPS_Speed", "Engine_Spee"], type: "line" },
-  { id: "d2", title: "Lambda & Throttle", channels: ["Lambda", "Throttle_Pe", "Front_Brake"], type: "line" },
-  { id: "d3", title: "GPS Trace", channels: [], type: "gps" },
+  {
+    id: "d1",
+    title: "Engine Vitals",
+    channels: ["Oil_Tempera", "Coolant_Tem", "Engine_Spee", "Oil_Pressur"],
+    type: "line",
+    axisByChannel: {
+      Oil_Tempera: "left",
+      Coolant_Tem: "left",
+      Engine_Spee: "right",
+      Oil_Pressur: "right",
+    },
+  },
+  {
+    id: "d2",
+    title: "Vehicle Speed",
+    channels: ["Vehicle_Spe", "GPS_Speed"],
+    type: "line",
+  },
+  {
+    id: "d3",
+    title: "Warning Codes",
+    channels: ["Motec_Warni", "ETC_Fault"],
+    type: "line",
+  },
 ];
 
 function storageKey(k: string) {
@@ -24,7 +46,11 @@ function storageKey(k: string) {
 }
 
 function defaultWidgets() {
-  return DEFAULT_WIDGETS.map((w) => ({ ...w, channels: [...w.channels] }));
+  return DEFAULT_WIDGETS.map((w) => ({
+    ...w,
+    channels: [...w.channels],
+    axisByChannel: w.axisByChannel ? { ...w.axisByChannel } : undefined,
+  }));
 }
 
 function normalizeWidget(widget: Partial<ChartWidget>, index: number): ChartWidget | null {
@@ -46,6 +72,13 @@ function normalizeWidget(widget: Partial<ChartWidget>, index: number): ChartWidg
     type,
     xChannel: typeof widget.xChannel === "string" ? widget.xChannel : undefined,
     yChannel: typeof widget.yChannel === "string" ? widget.yChannel : undefined,
+    axisByChannel: widget.axisByChannel && typeof widget.axisByChannel === "object"
+      ? Object.fromEntries(
+        Object.entries(widget.axisByChannel).filter((entry): entry is [string, "left" | "right"] =>
+          typeof entry[0] === "string" && (entry[1] === "left" || entry[1] === "right")
+        )
+      )
+      : undefined,
   };
 }
 

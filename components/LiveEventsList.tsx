@@ -15,10 +15,10 @@ interface LiveEventsListProps {
 
 type FilterMode = "all" | "nova";
 
+const NOVARACING_EVENT_DEVICE_ID = "77485";
+
 function isNovaRacing(session: TelemetrySession): boolean {
-  return [session.eventDeviceId, session.eventId, session.deviceId, session.name]
-    .filter(Boolean)
-    .some((f) => f!.toLowerCase().includes("nova"));
+  return session.eventDeviceId === NOVARACING_EVENT_DEVICE_ID;
 }
 
 function buildPodiumUrl(session: TelemetrySession): string | null {

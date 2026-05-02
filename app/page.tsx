@@ -5,6 +5,7 @@ import type { LapData, ParsedEventInfo } from "@/lib/types";
 import { GAUGE_CONFIG, KEY_GAUGES } from "@/lib/types";
 import { useTelemetry } from "@/hooks/useTelemetry";
 import { useChartConfig } from "@/hooks/useChartConfig";
+import { evaluateWarnings, useWarningConfig, useWarningLog } from "@/hooks/useWarningConfig";
 import EventSelector from "@/components/EventSelector";
 import ConnectionStatus from "@/components/ConnectionStatus";
 import GaugeCard from "@/components/GaugeCard";
@@ -13,8 +14,9 @@ import ChartsDashboard from "@/components/ChartsDashboard";
 import PacketInspector from "@/components/PacketInspector";
 import LiveEventsList from "@/components/LiveEventsList";
 import LapHistory from "@/components/LapHistory";
+import WarningsDashboard, { ActiveWarningsBanner } from "@/components/WarningsDashboard";
 
-type Tab = "discover" | "gauges" | "channels" | "chart" | "packets" | "history";
+type Tab = "discover" | "gauges" | "channels" | "chart" | "warnings" | "packets" | "history";
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 560;
@@ -92,6 +94,7 @@ export default function Dashboard() {
     return liveDeviceId ? `live:${liveDeviceId}` : null;
   }, [eventInfo, liveDeviceId]);
   const { widgets, addWidget, removeWidget, updateWidget, moveWidget } = useChartConfig(deviceKey);
+  const { definitions: warningDefinitions, updateWarning, resetWarnings } = useWarningConfig(deviceKey);
 
   // When viewing a loaded lap, use its data; otherwise use the live stream
   const displayHistory = loadedLap?.points ?? history;
@@ -114,6 +117,12 @@ export default function Dashboard() {
     if (live.length > 0) return live;
     return [];
   }, [loadedLap, eventInfo, latestValues]);
+
+  const activeWarnings = useMemo(
+    () => evaluateWarnings(warningDefinitions, displayLatestValues),
+    [warningDefinitions, displayLatestValues]
+  );
+  const { log: warningLog, clearLog: clearWarningLog } = useWarningLog(deviceKey, activeWarnings);
 
   // Synthetic sensor list built from live channel names when no eventInfo
   const liveSensors = useMemo(
@@ -196,6 +205,8 @@ export default function Dashboard() {
         </div>
       </header>
 
+      <ActiveWarningsBanner warnings={activeWarnings} onOpen={() => setActiveTab("warnings")} />
+
       <div className="flex flex-1 overflow-hidden">
         {/* Resizable sidebar */}
         <aside
@@ -270,7 +281,7 @@ export default function Dashboard() {
         <main className="flex-1 overflow-auto flex flex-col min-w-0">
           {/* Tabs */}
           <div className="border-b border-nova-border bg-nova-panel flex items-center gap-1 px-4 flex-shrink-0">
-            {(["discover", "gauges", "channels", "chart", "packets", "history"] as Tab[]).map((tab) => (
+            {(["discover", "gauges", "channels", "chart", "warnings", "packets", "history"] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -284,6 +295,11 @@ export default function Dashboard() {
                 {tab === "packets" && packetCount > 0 && (
                   <span className="ml-1.5 text-[10px] bg-nova-red/20 text-nova-red px-1 rounded">
                     {packetCount > 999 ? "999+" : packetCount}
+                  </span>
+                )}
+                {tab === "warnings" && activeWarnings.length > 0 && (
+                  <span className="ml-1.5 text-[10px] bg-red-500/20 text-red-300 px-1 rounded">
+                    {activeWarnings.length}
                   </span>
                 )}
               </button>
@@ -346,6 +362,17 @@ export default function Dashboard() {
                 onRemoveWidget={removeWidget}
                 onUpdateWidget={updateWidget}
                 onMoveWidget={moveWidget}
+              />
+            )}
+
+            {activeTab === "warnings" && (
+              <WarningsDashboard
+                definitions={warningDefinitions}
+                activeWarnings={activeWarnings}
+                log={warningLog}
+                onUpdate={updateWarning}
+                onReset={resetWarnings}
+                onClearLog={clearWarningLog}
               />
             )}
 

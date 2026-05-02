@@ -240,6 +240,7 @@ function Widget({
     () => forwardFill(history, activeChannels),
     [history, activeChannels]
   );
+  const hasRightAxis = activeChannels.some((ch) => widget.axisByChannel?.[ch] === "right");
   const scatterData = useMemo(() => {
     if (!xChannel || !yChannel) return [];
     return history
@@ -440,13 +441,28 @@ function Widget({
                 tick={{ fill: "#888", fontSize: 10 }}
                 stroke="#333"
               />
-              <YAxis tick={{ fill: "#888", fontSize: 10 }} stroke="#333" width={44} />
+              <YAxis
+                yAxisId="left"
+                tick={{ fill: "#888", fontSize: 10 }}
+                stroke="#333"
+                width={44}
+              />
+              {hasRightAxis && (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: "#888", fontSize: 10 }}
+                  stroke="#333"
+                  width={50}
+                />
+              )}
               <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 10 }} />
               {/* Grey hold lines — rendered first so real lines sit on top */}
               {activeChannels.map((ch) => (
                 <Line
                   key={`${ch}__f`}
+                  yAxisId={widget.axisByChannel?.[ch] ?? "left"}
                   dataKey={`${ch}__f`}
                   stroke="#484848"
                   strokeWidth={1}
@@ -460,6 +476,7 @@ function Widget({
               {activeChannels.map((ch) => (
                 <Line
                   key={ch}
+                  yAxisId={widget.axisByChannel?.[ch] ?? "left"}
                   type="monotone"
                   dataKey={ch}
                   stroke={colorFor(ch, availableChannels)}
