@@ -205,7 +205,7 @@ export default function LiveEventsList({
     }, [refreshNovaInfo]);
 
     const handleRefresh = () => {
-        void fetch("/api/discover-nova", { method: "POST" }).then(() => refreshNovaInfo());
+        void refreshNovaInfo();
         onRefresh();
     };
 

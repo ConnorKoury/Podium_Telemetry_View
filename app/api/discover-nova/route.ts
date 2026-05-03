@@ -1,8 +1,8 @@
+export const runtime = "edge";
+export const revalidate = 3600; // cache for 1 hour at the edge
+
 import { NextResponse } from "next/server";
 import type { ParsedEventInfo, Sensor } from "@/lib/types";
-
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-let cache: { info: ParsedEventInfo; expiresAt: number } | null = null;
 
 const PODIUM_BASE = "https://podium.live";
 const PODIUM_API = `${PODIUM_BASE}/api/v1`;
@@ -24,7 +24,6 @@ async function podiumLogin(): Promise<string> {
     .map((h) => h.split(";")[0])
     .join("; ");
 
-  // POST login
   const body = new URLSearchParams({
     authenticity_token: csrfToken,
     "user[email]": email,
@@ -70,21 +69,15 @@ interface PodiumEventDevice {
   device_id?: number;
   event_id?: number;
   channels?: Array<{ name: string; units?: string | null; min?: number; max?: number; precision?: number }>;
-  laps_uri?: string;
 }
 
 export async function GET() {
-  if (cache && Date.now() < cache.expiresAt) {
-    return NextResponse.json(cache.info);
-  }
-
   const userId = process.env.PODIUM_USER_ID ?? "9034";
   const deviceId = process.env.PODIUM_DEVICE_ID ?? "6160";
 
   try {
     const cookie = await podiumLogin();
 
-    // Get most recent event for this user
     const eventsData = await podiumGet<{ events: PodiumEvent[] }>(
       `/users/${userId}/events?per_page=1`,
       cookie,
@@ -92,7 +85,6 @@ export async function GET() {
     const latestEvent = eventsData.events[0];
     if (!latestEvent) throw new Error("No events found for Podium user");
 
-    // Get eventdevice detail (includes channels + eventDeviceId)
     const edData = await podiumGet<{ eventdevice: PodiumEventDevice }>(
       `/events/${latestEvent.id}/devices/${deviceId}`,
       cookie,
@@ -122,15 +114,9 @@ export async function GET() {
       rawConfig: null,
     };
 
-    cache = { info, expiresAt: Date.now() + CACHE_TTL_MS };
     return NextResponse.json(info);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
   }
-}
-
-export async function POST() {
-  cache = null;
-  return NextResponse.json({ ok: true });
 }
