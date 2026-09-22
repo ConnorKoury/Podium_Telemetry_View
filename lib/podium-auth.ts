@@ -18,6 +18,14 @@ async function getKv(): Promise<KVNamespace | null> {
   }
 }
 
+function sessionFromSetCookie(res: Response): string {
+  const headers = res.headers.getSetCookie?.() ?? [];
+  const raw = headers.length ? headers.join("\n") : (res.headers.get("set-cookie") ?? "");
+  const matches = [...raw.matchAll(/_rclive_session_=([^;\s]+)/g)];
+  const value = matches.at(-1)?.[1];
+  return value ? `_rclive_session_=${value}` : "";
+}
+
 async function fetchCsrfAndCookie(): Promise<{ csrf: string; loginCookie: string }> {
   const res = await fetch("https://podium.live/users/sign_in", {
     headers: { "User-Agent": "Mozilla/5.0" },
@@ -26,9 +34,7 @@ async function fetchCsrfAndCookie(): Promise<{ csrf: string; loginCookie: string
   const html = await res.text();
   const m = html.match(/name="authenticity_token"[^>]*value="([^"]+)"/);
   const csrf = m?.[1] ?? "";
-  const setCookie = res.headers.get("set-cookie") ?? "";
-  const sm = setCookie.match(/_rclive_session_=([^;]+)/);
-  return { csrf, loginCookie: sm ? `_rclive_session_=${sm[1]}` : "" };
+  return { csrf, loginCookie: sessionFromSetCookie(res) };
 }
 
 async function doLogin(): Promise<string> {
@@ -50,16 +56,18 @@ async function doLogin(): Promise<string> {
       "Content-Type": "application/x-www-form-urlencoded",
       Cookie: loginCookie,
       "User-Agent": "Mozilla/5.0",
+      Referer: "https://podium.live/users/sign_in",
     },
     body: body.toString(),
     redirect: "manual",
     signal: AbortSignal.timeout(15_000),
   });
 
-  const setCookie = res.headers.get("set-cookie") ?? "";
-  const m = setCookie.match(/_rclive_session_=([^;]+)/);
-  if (!m) throw new Error(`Podium login failed (status ${res.status})`);
-  return `_rclive_session_=${m[1]}`;
+  const session = sessionFromSetCookie(res) || loginCookie;
+  if ((res.status !== 302 && res.status !== 303) || !session) {
+    throw new Error(`Podium login failed (status ${res.status})`);
+  }
+  return session;
 }
 
 export async function getPodiumCookie(): Promise<string> {
