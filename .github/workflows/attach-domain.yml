@@ -1,0 +1,68 @@
+name: Attach telemetry.connorkoury.com
+
+on:
+  workflow_dispatch:
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Point telemetry.connorkoury.com at production Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          HOST: telemetry.connorkoury.com
+          PROJECT: podium-telemetry-view
+        run: |
+          set -euo pipefail
+          api() {
+            curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json" "$@"
+          }
+          BASE="https://api.cloudflare.com/client/v4"
+
+          echo "=== pages project ==="
+          api "$BASE/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT}" \
+            | jq '{success, errors, name: .result.name, subdomain: .result.subdomain, production_branch: .result.production_branch, domains: .result.domains}'
+
+          echo "=== pages domains ==="
+          api "$BASE/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+            | jq '{success, errors, result: [.result[]? | {name, status, verification_data, validation_data}]}'
+
+          echo "=== zone ==="
+          ZONE_JSON=$(api "$BASE/zones?name=connorkoury.com")
+          echo "$ZONE_JSON" | jq '{success, errors, result: [.result[]? | {id, name, status}]}'
+          ZONE_ID=$(echo "$ZONE_JSON" | jq -r '.result[0].id // empty')
+
+          if [ -n "$ZONE_ID" ]; then
+            echo "=== dns before ==="
+            api "$BASE/zones/${ZONE_ID}/dns_records?name=${HOST}" \
+              | jq '{success, errors, result: [.result[]? | {id, type, name, content, proxied}]}'
+          fi
+
+          echo "=== add custom domain ==="
+          ADD=$(api -X POST "$BASE/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+            --data "{\"name\":\"${HOST}\"}")
+          echo "$ADD" | jq '{success, errors, messages, result: {name: .result.name, status: .result.status}}'
+
+          if [ -n "$ZONE_ID" ]; then
+            DNS=$(api "$BASE/zones/${ZONE_ID}/dns_records?name=${HOST}")
+            echo "$DNS" | jq '{success, errors, result: [.result[]? | {id, type, name, content, proxied}]}'
+            TARGET="${PROJECT}.pages.dev"
+            echo "$DNS" | jq -c '.result[]? | {id, type, content, proxied}' | while read -r rec; do
+              id=$(echo "$rec" | jq -r .id)
+              type=$(echo "$rec" | jq -r .type)
+              content=$(echo "$rec" | jq -r .content)
+              if [ "$type" = "CNAME" ] && [ "$content" != "$TARGET" ]; then
+                echo "updating CNAME ${id} from ${content} to ${TARGET}"
+                api -X PATCH "$BASE/zones/${ZONE_ID}/dns_records/${id}" \
+                  --data "{\"type\":\"CNAME\",\"name\":\"${HOST}\",\"content\":\"${TARGET}\",\"proxied\":true,\"ttl\":1}" \
+                  | jq '{success, errors, result: {type: .result.type, name: .result.name, content: .result.content, proxied: .result.proxied}}'
+              fi
+            done
+            echo "=== dns after ==="
+            api "$BASE/zones/${ZONE_ID}/dns_records?name=${HOST}" \
+              | jq '{success, errors, result: [.result[]? | {id, type, name, content, proxied}]}'
+            echo "=== domain status ==="
+            api "$BASE/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+              | jq '{success, errors, result: [.result[]? | {name, status}]}'
+          fi
